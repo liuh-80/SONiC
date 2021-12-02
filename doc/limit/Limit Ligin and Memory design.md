@@ -12,6 +12,8 @@
 - [3 Design](#design)
   * [3.1 Login Limit Implementation](#31-login-limit-implementation)
   * [3.2 Memory Limit Implementation](#32-memory-limit-implementation)
+  * [3.3 ConfigDB Schema](#33-configdb-schema)
+  * [3.4 CLI](#34-cli)
 - [4 Error handling](#error-handling)
 - [5 Serviceability and Debug](#serviceability-and-debug)
 - [6 Unit Test](#unit-test)
@@ -36,7 +38,7 @@ This document provides a detailed description on the new features for:
 ## 2.1 SONiC CLI
  - Manage limit
 ```
-    config limit {login | memory} { add | del } {user | group | global} <number>
+    config limit {login | memory} { add | del } {user | group | global} <name> <number>
 ```
 
  - Show limit
@@ -53,7 +55,7 @@ This document provides a detailed description on the new features for:
 ```mermaid
 graph TD;
 %% SONiC CLI update config DB
-CLI[SONiC CLI] -- update limit setting --> CONFDB(Config DB);
+CLI[SONiC CLI] -- update limit setting --> CONFDB[(Config DB)];
 
 %% HostCfgd subscribe config DB change
 CONFDB --> HOSTCFGD[Hostcfgd];
@@ -78,6 +80,7 @@ CGROUP -- OOM killer --- APP(user process);
 
 ## 3.1 Login limit Implementation
  - Enable PAM plugin pam_limits.so to support login limit.
+ - When login limit exceed, pam_limits.so will terminate login session with error message.
 
 ```mermaid
 sequenceDiagram  
@@ -111,15 +114,77 @@ sequenceDiagram
  - OOM killer will terminate/pause procress.
 
 ```mermaid
-flowchart  LR  
+flowchart  TB  
 %% cgrulesengd will monitor process and migrate process by uid or gid
- cgrulesengd-- monitor -->procress
- procress-- migrate .->cgroup_rouser
+ cgrulesengd-- monitor and migrate -->procress((procress))
+ procress-. migrate .->cgroup_rouser
+
 %% cgroup will monitor cgroups
  cgroup-- monitor cgroups -->cgroup_rouser
-%% when resource limits exceed, cgroup will trigger OOM killer
+
+%% when resource exceed limit, cgroup will trigger OOM killer
  cgroup-- trigger when exceed -->OOMkiller[OOM Killer]
  OOMkiller -- terminate/pause --> procress
+```
+## 3.2 ConfigDB Schema
+ - Limit setting table.
+```
+; Key
+limit_key              = 1*32VCHAR          ; setting name, format is resource type + limit scope + limit name
+; Attributes
+resource_type                = LIST(1*32VCHAR)   ; Limit resource type, now only support (login, memory)
+scope                = LIST(1*32VCHAR)   ; Limit scope, now only support (global, group, user)
+value             = Number  ; limit value, for login this is max login session count, for memory this is memory side in byte.
+```
+
+## 3.2 CLI
+ - Add following command to set/remove limit setting.
+```
+    // set global login limit
+    config limit login add global <max session count>
+
+    // remove global login limit
+    config limit login del global
+
+    // add group login limit
+    config limit login add group <group name> <max session count>
+
+    // remove group login limit
+    config limit login del group <group name>
+
+    // add user login limit
+    config limit login add user <user name> <max session count>
+
+    // remove user login limit
+    config limit login del user <user name>
+
+
+    // set global memory limit
+    config limit memory add global <memory side in byte>
+
+    // remove global memory limit
+    config limit memory del global
+
+    // add group memory limit
+    config limit memory add group <group name> <memory side in byte>
+
+    // remove group memory limit
+    config limit memory del group <group name>
+
+    // add user memory limit
+    config limit memory add user <user name> <memory side in byte>
+
+    // remove user memory limit
+    config limit memory del user <user name>
+```
+
+ - Add following command to show limit setting.
+```
+    // show login limit setting
+    show limit login
+
+    // show memory limit setting
+    show limit memory
 ```
 
 # 4 Error handling
