@@ -52,14 +52,28 @@ This document provides a detailed description on the new features for:
 
 ```mermaid
 graph TD;
-CLI[SONiC CLI] -- update limit setting --> CONFDB[Config DB];
-CONFDB --> HOSTCFGD[(Hostcfgd)];
-HOSTCFGD -- update limits.conf --> PAMCFG[PAM lib];
-PAMCFG --> LIMITLIB[pam_limits.so];
-HOSTCFGD -- update cgred.conf & cgconfig.conf --> CGENGD[cgrulesengd];
-CGENGD --> CGROUP[cgroup];
-USERSESSION(user session) -- login --> LIMITLIB;
-USERAPP(user process) -- allocate memory --> CGROUP;
+%% SONiC CLI update config DB
+CLI[SONiC CLI] -- update limit setting --> CONFDB(Config DB);
+
+%% HostCfgd subscribe config DB change
+CONFDB --> HOSTCFGD[Hostcfgd];
+
+%% HostCfgd Update config files
+HOSTCFGD -- update limits.conf --> PAMCFG[limits.conf];
+HOSTCFGD -- update cgconfig.conf --> CGRCFG[cgconfig.conf];
+HOSTCFGD -- update cgrules.conf --> CGCFG[cgrules.conf];
+
+%% pam_limits.so will handle login limit
+PAMCFG -.-> LIMITLIB[pam_limits.so];
+LIMITLIB -- login --- USERSESSION(user session);
+
+%% cgrulesengd daemon will migrate procress to cgroups by uid and gid
+CGRCFG -.-> CGRCFGD[cgrulesengd];
+CGRCFGD -- migrate process --- APP;
+
+%% cgroup check memory limit and trigger OOM killer
+CGCFG -.-> CGROUP[cgroup];
+CGROUP -- OOM killer --- APP(user process);
 ```
 
 ## 3.1 Login limit Implementation
@@ -70,9 +84,22 @@ USERAPP(user process) -- allocate memory --> CGROUP;
  - cgrulesengd will run in background to migrate process to cgroup.
 
 # 4 Error handling
+ - pam_limits.so will return errors as per [PAM](#pam) respectively.
 
 # 5 Serviceability and Debug
+ - pam_limits.so can be debugged by enabling the debug flag in PAM config file.
+ - cgroup cgrulesengd can be debugged by enabling the CGROUP_LOGLEVEL environment variable.
 
 # 6 Unit Test
 
+- TODO: add end to end test case.
+
 # 7 References
+## pam_limits.so
+https://man7.org/linux/man-pages/man8/pam_limits.8.html
+## cgroup
+https://man7.org/linux/man-pages/man7/cgroups.7.html
+## cgroup-tools
+https://manpages.debian.org/testing/cgroup-tools/cgrules.conf.5.en.html
+https://manpages.debian.org/bullseye/cgroup-tools/cgconfig.conf.5.en.html
+https://manpages.debian.org/experimental/cgroup-tools/cgrulesengd.8.en.html
