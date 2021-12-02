@@ -58,7 +58,7 @@ graph TD;
 CLI[SONiC CLI] -- update limit setting --> CONFDB[(Config DB)];
 
 %% HostCfgd subscribe config DB change
-CONFDB --> HOSTCFGD[Hostcfgd];
+CONFDB -.-> HOSTCFGD[Hostcfgd];
 
 %% HostCfgd Update config files
 HOSTCFGD -- update limits.conf --> PAMCFG[limits.conf];
@@ -132,9 +132,9 @@ flowchart  TB
 ; Key
 limit_key              = 1*32VCHAR          ; setting name, format is resource type + limit scope + limit name
 ; Attributes
-resource               = LIST(1*32VCHAR)   ; Limit resource type, now only support (login, memory)
-scope                  = LIST(1*32VCHAR)   ; Limit scope, now only support (global, group, user)
-value                  = 16*DIGIT          ; maximum limit, for login this is max login session, for memory this is memory size in byte.
+resource_type                = LIST(1*32VCHAR)   ; Limit resource type, now only support (login, memory)
+scope                = LIST(1*32VCHAR)   ; Limit scope, now only support (global, group, user)
+value             = Number  ; limit value, for login this is max login session count, for memory this is memory side in byte.
 ```
 
 ## 3.2 CLI
