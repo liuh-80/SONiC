@@ -79,9 +79,48 @@ CGROUP -- OOM killer --- APP(user process);
 ## 3.1 Login limit Implementation
  - Enable PAM plugin pam_limits.so to support login limit.
 
+```mermaid
+sequenceDiagram  
+
+%% user login without exceed the limit
+ SSH/Console->>SSHD  : login
+	 activate  SSHD
+	 SSHD->>pam_limits.so: check login limit
+		 activate  pam_limits.so
+		 pam_limits.so->>bash: not exceed the limit
+			 activate  bash
+			 bash->>SSH/Console: login success
+			 deactivate  bash
+	 SSH/Console->>SSHD  : logout
+	 deactivate  SSHD
+ 
+%% user login exceed the limit
+ SSH/Console->>SSHD  : login
+	 activate  SSHD
+	 SSHD->>pam_limits.so: check login limit
+		 activate  pam_limits.so
+		 pam_limits.so->>SSH/Console: exceed the limit
+		 deactivate  pam_limits.so
+	 deactivate  SSHD
+```
+
 ## 3.2 Memory limit Implementation
  - Use cgroup-tools to support memory limit.
  - cgrulesengd will run in background to migrate process to cgroup.
+ - cgroup will monitor cgroups resource usage, and trigger OOM killer when exceeds limit.
+ - OOM killer will terminate/pause procress.
+
+```mermaid
+flowchart  LR  
+%% cgrulesengd will monitor process and migrate process by uid or gid
+ cgrulesengd-- monitor -->procress
+ procress-- migrate .->cgroup_rouser
+%% cgroup will monitor cgroups
+ cgroup-- monitor cgroups -->cgroup_rouser
+%% when resource limits exceed, cgroup will trigger OOM killer
+ cgroup-- trigger when exceed -->OOMkiller[OOM Killer]
+ OOMkiller -- terminate/pause --> procress
+```
 
 # 4 Error handling
  - pam_limits.so will return errors as per [PAM](#pam) respectively.
