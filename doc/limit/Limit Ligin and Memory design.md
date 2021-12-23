@@ -6,14 +6,16 @@
 - [1 Functional Requirements](#1-functional-requirement)
   * [1.1 Limit the number of logins per user/group/system](#11-limit-the-number-of-logins-per-user/group/system)
   * [1.2 Limit memory usage per user/group/system](#12-limit-memory-usage-per-user/group/system)
+  * [1.3 Default limitation by memory size](#13-default-limitation-by-memory-size)
 - [2 Configuration and Management Requirements](#2-configuration-and-management-requirements)
   * [2.1 SONiC CLI](#21-sonic-cli)
   * [2.2 Config DB](#22-config-db)
 - [3 Design](#design)
   * [3.1 Login Limit Implementation](#31-login-limit-implementation)
   * [3.2 Memory Limit Implementation](#32-memory-limit-implementation)
-  * [3.3 ConfigDB Schema](#33-configdb-schema)
-  * [3.4 CLI](#34-cli)
+  * [3.3 Default memory limitation Implementation](#33-default-memory-limitation-Implementation)
+  * [3.4 ConfigDB Schema](#34-configdb-schema)
+  * [3.5 CLI](#35-cli)
 - [4 Error handling](#error-handling)
 - [5 Serviceability and Debug](#serviceability-and-debug)
 - [6 Unit Test](#unit-test)
@@ -23,10 +25,18 @@
 # About this Manual
 This document provides a detailed description on the new features for:
  - Limit the number of logins per user/group/system.
- - Limit memory usage per user/group/system.
+ - Limit memory usage per user/group membership.
+ - Default limit user login session and memory by device information.
+
+## SONiC memory issue sloved by this feature.
+ - Currenly SONiC enabled OOM killer, and set 2 to /proc/sys/vm/panic_on_oom, which will trigger kernal panic when OOM. This is by design to protect SONiC key procress and container.
+ - A typical switch device have 4 GB memory and sonic usually will use 1.5 GB for dockers, and 500 MB for system procress. so there will be 2 GB free memory for user. also sonic not enable swap for most device.
+ - When user run some command trigger OOM, SONiC will kernal panic. for example:
+   - Multiple user login to device, some service may create 10+ concurrent sesstion login to device.
+   - Some user script/command take too much memory, currently 'show' command will take 60 MB memory.
 
 # 1 Functional Requirement
-## 1.1 Limit the number of logins per user/group/system
+## 1.1 Limit the login session per user/group/system
  - Can set max login session count per user/group/system.
  - When exceed maximum login count, login failed with error message.
 
@@ -34,11 +44,20 @@ This document provides a detailed description on the new features for:
  - Can set max memory usage per user/group/system.
  - When exceed maximum memory usage, the OOM process will be paused or terminated.
 
+## 1.3 Default limitation by memory size
+- Default login session by device hatdware and software information.
+- For customer, they may have pipelines to initialize device configuration, because this feature add new commands, the pipeline may need update. The default limitation is designed to cover most case to minimize the pipeline change.
+
 # 2 Configuration and Management Requirements
 ## 2.1 SONiC CLI
- - Manage limit
+ - Manage login session or memory  limit settings
 ```
-    config limit {login | memory} { add | del } {user | group | global} <name> <number>
+    config limit { login | memory } { add | del } {user | group | global} <name> <number>
+```
+ - Manage default limit settings
+```
+    config limit login parameter totalmemoryfactor <number>
+    config limit login parameter usermemory <number>
 ```
 
  - Show limit
@@ -57,24 +76,29 @@ graph TD;
 %% SONiC CLI update config DB
 CLI[SONiC CLI] -- update limit setting --> CONFDB[(Config DB)];
 
+
 %% HostCfgd subscribe config DB change
 CONFDB -.-> HOSTCFGD[Hostcfgd];
 
 %% HostCfgd Update config files
 HOSTCFGD -- update limits.conf --> PAMCFG[limits.conf];
-HOSTCFGD -- update cgconfig.conf --> CGRCFG[cgconfig.conf];
-HOSTCFGD -- update cgrules.conf --> CGCFG[cgrules.conf];
 
 %% pam_limits.so will handle login limit
 PAMCFG -.-> LIMITLIB[pam_limits.so];
 LIMITLIB -- login --- USERSESSION(user session);
 
-%% cgrulesengd daemon will migrate procress to cgroups by uid and gid
-CGRCFG -.-> CGRCFGD[cgrulesengd];
-CGRCFGD -- migrate process --- APP;
+
+%% pam_exec script read config DB
+CONFDB -.-> LoginScript[pam_exec script];
+
+%% pam_exec script generate user silices config
+LoginScript -- update user.slices --> USERSLICES[user-*.slices];
+
+%% systemd will manage user slices
+USERSLICES -.-> SYSTEMD[systemd];
 
 %% cgroup check memory limit and trigger OOM killer
-CGCFG -.-> CGROUP[cgroup];
+SYSTEMD -.-> CGROUP[cgroup];
 CGROUP -- OOM killer --- APP(user process);
 ```
 
@@ -106,38 +130,78 @@ sequenceDiagram
 		 deactivate  pam_limits.so
 	 deactivate  SSHD
 ```
+### Other solution for Linux login session limit
+
+|                   | How                                                | Pros                                                         | Cons                       |
+| ----------------- | -------------------------------------------------- | ------------------------------------------------------------ | -------------------------- |
+| PAM limit         | Change PAM setting file: /etc/security/limits.conf | Support per-user/per-group/global limit. Only need change config file. |                            |
+| Bash login script | Call script when user login                        |                                                              | Need develop new script.   |
+| SSHD config       | Change SSHD setting file: /etc/sshd_config         |                                                              | Only support global limit. |
+
+- SONiC will create new user when domain user login, PAM limit support config limit to a not existed user.
+
 
 ## 3.2 Memory limit Implementation
- - Use cgroup-tools to support memory limit.
- - cgrulesengd will run in background to migrate process to cgroup.
+ - Memory limit managed by systemd user slices.
+ - pam_exec.so plugin will create user slices when user login.
  - cgroup will monitor cgroups resource usage, and trigger OOM killer when exceeds limit.
  - OOM killer will terminate/pause procress.
 
 ```mermaid
 flowchart  TB  
-%% cgrulesengd will monitor process and migrate process by uid or gid
- cgrulesengd-- monitor and migrate -->procress((procress))
- procress-. migrate .->cgroup_rouser
-
+%% pam_exec.so plugin will create user slices when user login and cleanup when user logout
+ pam_exec.so-- create when user login -->user-*.slices
+ 
+%% systemd will manage cgroup and migrate process by uid
+ systemd-- manage -->user-*.slices
+ user-*.slices-.->procress
+ 
 %% cgroup will monitor cgroups
- cgroup-- monitor cgroups -->cgroup_rouser
+ cgroup-- monitor cgroups -->user-*.slices
 
 %% when resource exceed limit, cgroup will trigger OOM killer
  cgroup-- trigger when exceed -->OOMkiller[OOM Killer]
- OOMkiller -- terminate/pause --> procress
+ OOMkiller -- terminate/pause --> procress((procress))
 ```
-## 3.2 ConfigDB Schema
+
+### Other solution for Linux memory limit
+ - rlimit and cgroup-tools are 2 others solution, we have following matrix to compare the Pros and Cons
+
+|              | How                                           | Pros                                            | Cons                           | Per-user                    | Per-group member | per-group | Global |
+| ------------ | --------------------------------------------- | ----------------------------------------------- | ------------------------------ | --------------------------- | ---------------- | --------- | ------ |
+| rlimit       | PAM plugin                                    |                                                 | Only per-procress control.     | per-user per-group control. | NO               | NO        | NO     |
+| cgroup-tools | daemon manage/migrate user process to cgroups | Cross procress control. Support user group.     | Not support domain user.       | Yes                         | NO               | Yes       |        |
+| systemd      | Manage cgroups with systemd user.slices       | Cross procress control. Support slice template. | Not support per-group control. | Yes                         | Yes              | No        | Yes    |
+
+- rlimit only support per-procress control.
+- cgroup-tools not support domain user, this is because SONiC will create new user when domain user login, but cgroup-tools only support existed user.
+- systemd have good support to domain user, but not support per-group limit.
+
+
+
+## 3.3 Default memory limitation Implementation
+- Max number of logins by memory size:
+  - Max number of logins = memory size * factor / max memory per-user.
+
+- Default factor is 0.4, which is based on experience of SONiC memory utilzation.
+  - Also different SONiC version/variant may have different setting according to configuration, this also will configable.
+- Max memory per-user is hardcode config. Default value is 200 MB, because 'show' command will take 60 MB memory, and we plan support user will run 3 commands concurrently.
+  - If user want run a script/command which take more than 200MB memory and been blocked by this feature, user can modify the per-user limit with the config command.
+
+- For customer, they may have pipelines to initialize device configuration, because this feature add new commands, the pipeline may need update. The default limitation is designed to cover most case to minimize the pipeline change.
+
+## 3.4 ConfigDB Schema
  - Limit setting table.
 ```
 ; Key
 limit_key              = 1*32VCHAR          ; setting name, format is resource type + limit scope + limit name
 ; Attributes
-resource_type                = LIST(1*32VCHAR)   ; Limit resource type, now only support (login, memory)
-scope                = LIST(1*32VCHAR)   ; Limit scope, now only support (global, group, user)
-value             = Number  ; limit value, for login this is max login session count, for memory this is memory side in byte.
+resource_type          = LIST(1*32VCHAR)   ; Limit resource type, now only support (login, memory)
+scope                  = LIST(1*32VCHAR)   ; Limit scope, now only support (global, group, user)
+value                  = Number  ; limit value, for login this is max login session count, for memory this is memory side in byte.
 ```
 
-## 3.2 CLI
+## 3.5 CLI
  - Add following command to set/remove limit setting.
 ```
     // set global login limit
@@ -158,17 +222,10 @@ value             = Number  ; limit value, for login this is max login session c
     // remove user login limit
     config limit login del user <user name>
 
-
-    // set global memory limit
-    config limit memory add global <memory side in byte>
-
-    // remove global memory limit
-    config limit memory del global
-
-    // add group memory limit
+    // add group membership memory limit
     config limit memory add group <group name> <memory side in byte>
 
-    // remove group memory limit
+    // remove group membership memory limit
     config limit memory del group <group name>
 
     // add user memory limit
@@ -176,6 +233,12 @@ value             = Number  ; limit value, for login this is max login session c
 
     // remove user memory limit
     config limit memory del user <user name>
+    
+    // set the 'memory factor' parameter for calculate default max login count
+    config limit login parameter memoryfactor <number>
+
+    // set the 'user memory' parameter for calculate default max login count
+    config limit login parameter usermemory <number>
 ```
 
  - Add following command to show limit setting.
@@ -196,14 +259,58 @@ value             = Number  ; limit value, for login this is max login session c
 
 # 6 Unit Test
 
-- TODO: add end to end test case.
+## 6.1 Default login session limit test
+
+  - config memory factor and check the default login session limit config updated correctly:
+  ```
+      Verify the config in /set/security/limits.conf updated correctly.
+      Verify the device can login with mutiple login sessions coording to the default limit. 
+  ```
+
+  - config memory factor to 0 and check the config command result:
+  ```
+      Verify the config config command failed with warning message.
+      Verify the device can login with mutiple login sessions coording to the default limit. 
+  ```
+
+  - config max memory per-user setting and check the default login session limit config updated correctly:
+  ```
+      Verify the config in /set/security/limits.conf updated correctly.
+      Verify the device can login with mutiple login sessions coording to the default limit. 
+  ```
+
+  - config max memory per-user to INT MAX and check the config command result:
+  ```
+      Verify the config config command failed with warning message.
+      Verify the device can login with mutiple login sessions coording to the default limit. 
+  ```
+
+## 6.2 Login session limit test
+
+  - Change the per-user/per-group/global login session limit setting:
+  ```
+      Verify the config in /set/security/limits.conf updated correctly.
+      Verify the device can login with mutiple login sessions coording to the default limit. 
+      Verify the setting can be delete by config command.
+  ```
+
+## 6.3 Memory limit test
+
+  - Change the per-user/per-group/global memory limit setting:
+  ```
+      Verify the user.slices template updated correctly.
+      Verify user command success when command memory consumption is smaller than the limit.
+      Verify user command failed when memory consumption is bigger than the limit.
+      Verify the setting can be delete by config command.
+  ```
 
 # 7 References
 ## pam_limits.so
 https://man7.org/linux/man-pages/man8/pam_limits.8.html
+## pam_exec.so
+https://linux.die.net/man/8/pam_exec
 ## cgroup
 https://man7.org/linux/man-pages/man7/cgroups.7.html
-## cgroup-tools
-https://manpages.debian.org/testing/cgroup-tools/cgrules.conf.5.en.html
-https://manpages.debian.org/bullseye/cgroup-tools/cgconfig.conf.5.en.html
-https://manpages.debian.org/experimental/cgroup-tools/cgrulesengd.8.en.html
+## user.slice
+https://man7.org/linux/man-pages/man5/systemd.slice.5.html
+
