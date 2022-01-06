@@ -165,7 +165,6 @@ flowchart  TB
 ```
 
 ### Other solution for Linux memory limit
- - rlimit and cgroup-tools are 2 others solution, we have following matrix to compare the Pros and Cons
 
 |              | How                                           | Pros                                            | Cons                           | Per-user                    | Per-group member | per-group | Global |
 | ------------ | --------------------------------------------- | ----------------------------------------------- | ------------------------------ | --------------------------- | ---------------- | --------- | ------ |
@@ -182,12 +181,22 @@ flowchart  TB
 ## 3.3 Default memory limitation Implementation
 - Max number of logins by memory size:
   - Max number of logins = memory size * factor / max memory per-user.
-
-- Default factor is 0.4, which is based on experience of SONiC memory utilzation.
-  - Also different SONiC version/variant may have different setting according to configuration, this also will configable.
-- Max memory per-user is hardcode config. Default value is 200 MB, because 'show' command will take 60 MB memory, and we plan support user will run 3 commands concurrently.
+- Default factor by OS version, device type and vendor, which is based on history data of SONiC memory utilization:
+  - Celestica:
+    - M0: 0.4
+    - T0 & T1: 0.6
+  - Mellanox & Nexus:
+    - T0 & T1: 0.6
+  - Nokia:
+    - M0: 0.6
+  - Arista:
+    - T0: 0.7
+    - T1: 0.6
+  - Dell & Firce10
+    - T0 & T1: 0.7
+  - For all other device, default factor is 0.4
+- Max memory per-user is hardcode config. Default value is 200 MB, because 'show' command will take 70 MB memory, and we plan support user will run 3 commands concurrently.
   - If user want run a script/command which take more than 200MB memory and been blocked by this feature, user can modify the per-user limit with the config command.
-
 - For customer, they may have pipelines to initialize device configuration, because this feature add new commands, the pipeline may need update. The default limitation is designed to cover most case to minimize the pipeline change.
 
 ## 3.4 ConfigDB Schema
